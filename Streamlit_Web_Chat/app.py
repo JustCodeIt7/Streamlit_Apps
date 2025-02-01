@@ -2,18 +2,15 @@ import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 
-# Import Ollama wrappers for embeddings and LLM
-# from langchain.embeddings.ollama import OllamaEmbeddings
-# from langchain.llms.ollama import Ollama
-
 from langchain.vectorstores import FAISS
 from langchain.text_splitter import CharacterTextSplitter
 from langchain.chains.question_answering import load_qa_chain
 
-# from langchain_ollama.chat_models import ChatOllama
+# Import Ollama wrappers for embeddings and chat models
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 
-# --- Functions to Crawl and Process the Website ---
+
+# --- Functions to Crawl and Process the Website / Page ---
 
 
 def get_website_text(url: str) -> str:
@@ -68,10 +65,10 @@ def answer_question(query: str, vectorstore) -> str:
     docs = vectorstore.similarity_search(query, k=4)
 
     # Instantiate the Ollama chat model.
-    # Replace with your Ollama chat model name.
+    # Replace "ollama-chat-model" with your Ollama chat model name.
     llm = ChatOllama(model="llama3.2", temperature=0)
 
-    # Load a QA chain that stuffs all the documents into the prompt.
+    # Load a QA chain that stuffs the retrieved documents into the prompt.
     chain = load_qa_chain(llm, chain_type="stuff")
     answer = chain.run(input_documents=docs, question=query)
     return answer
@@ -81,38 +78,54 @@ def answer_question(query: str, vectorstore) -> str:
 
 st.title("Website Chatbot with LangChain and Ollama")
 
-# Sidebar: Enter website URL
-st.sidebar.header("Step 1: Load a Website")
-website_url = st.sidebar.text_input(
-    "Enter the URL of a single webpage:", value="https://example.com"
-)
+# Sidebar: Select mode and load a page accordingly.
+mode = st.sidebar.radio("Select Mode", options=["Crawl Website", "Chat Single Page"])
 
-if st.sidebar.button("Load Website"):
-    with st.spinner("Crawling website..."):
-        website_text = get_website_text(website_url)
-        if website_text:
-            chunks = split_text(website_text)
-            vectorstore = create_vectorstore(chunks)
-            st.session_state.vectorstore = vectorstore
-            st.success("Website loaded successfully!")
-        else:
-            st.error("Failed to retrieve website text.")
+if mode == "Crawl Website":
+    website_url = st.sidebar.text_input(
+        "Enter the URL of the website to crawl:", value="https://example.com"
+    )
+    if st.sidebar.button("Crawl Website"):
+        with st.spinner("Crawling website..."):
+            website_text = get_website_text(website_url)
+            if website_text:
+                chunks = split_text(website_text)
+                vectorstore = create_vectorstore(chunks)
+                st.session_state.vectorstore = vectorstore
+                st.success("Website crawled and loaded successfully!")
+            else:
+                st.error("Failed to retrieve website text.")
 
-# Initialize chat history if not already set
+elif mode == "Chat Single Page":
+    website_url = st.sidebar.text_input(
+        "Enter the URL of the single page to load:", value="https://example.com"
+    )
+    if st.sidebar.button("Load Single Page"):
+        with st.spinner("Loading single page..."):
+            website_text = get_website_text(website_url)
+            if website_text:
+                chunks = split_text(website_text)
+                vectorstore = create_vectorstore(chunks)
+                st.session_state.vectorstore = vectorstore
+                st.success("Single page loaded successfully!")
+            else:
+                st.error("Failed to retrieve page text.")
+
+# Initialize chat history if not already set.
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-st.header("Step 2: Chat with the Website")
+st.header("Chat with the Loaded Content")
 
 if "vectorstore" in st.session_state:
     with st.form("chat_form", clear_on_submit=True):
-        user_question = st.text_input("Your question about the website:")
+        user_question = st.text_input("Your question:")
         submitted = st.form_submit_button("Send")
 
     if submitted and user_question:
         with st.spinner("Generating answer..."):
             answer = answer_question(user_question, st.session_state.vectorstore)
-            # Save chat history
+            # Append the QA pair to the chat history.
             st.session_state.chat_history.append({"question": user_question, "answer": answer})
 
     if st.session_state.chat_history:
@@ -121,4 +134,4 @@ if "vectorstore" in st.session_state:
             st.markdown(f"**You:** {chat['question']}")
             st.markdown(f"**Bot:** {chat['answer']}")
 else:
-    st.info("Please enter a website URL in the sidebar and click 'Load Website' to begin.")
+    st.info("Please load a website or single page from the sidebar to start chatting.")
