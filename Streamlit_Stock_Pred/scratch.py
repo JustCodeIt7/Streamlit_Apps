@@ -4,23 +4,51 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 #%%
-# Load a year of stock data
-end_date = datetime.now()
-start_date = end_date - timedelta(days=365)
+import yfinance as yf
+dat = yf.Ticker("MSFT")
 
-# Example: Load Apple stock data
-ticker = "AAPL"
-stock_data = yf.download(ticker, start=start_date, end=end_date)
+# %%
+print(dat)
+# %%
+df = dat.history(period='1mo')
+print(df)
 
-# Display the first few rows of the data
-print(stock_data.head())
+# %%
+tickers = yf.Tickers('MSFT AAPL GOOG')
+tickers.tickers['MSFT'].info
+yf.download(['MSFT', 'AAPL', 'GOOG'], period='1mo')
 
-# Plot the closing price
-plt.figure(figsize=(12, 6))
-plt.plot(stock_data['Close'])
-plt.title(f'{ticker} Stock Price (Past Year)')
-plt.xlabel('Date')
-plt.ylabel('Price (USD)')
-plt.grid(True)
-plt.tight_layout()
+
+# %%
+dat = yf.Ticker("MSFT")
+dat.info
+dat.calendar
+dat.analyst_price_targets
+dat.quarterly_income_stmt
+dat.history(period='1mo')
+dat.option_chain(dat.options[0]).calls
+# %%
+import yfinance as yf
+
+# Define the ticker symbol
+ticker_symbol = "AAPL"
+
+# Create a Ticker object
+ticker = yf.Ticker(ticker_symbol)
+
+# Fetch historical market data
+historical_data = ticker.history(period="1y")  # data for the last year
+print("Historical Data:")
+print(historical_data)
+
+# Fetch basic financials
+financials = ticker.financials
+print("\nFinancials:")
+print(financials)
+
+# Fetch stock actions like dividends and splits
+actions = ticker.actions
+print("\nStock Actions:")
+print(actions)
+
 # %%
