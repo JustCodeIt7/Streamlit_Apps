@@ -32,8 +32,8 @@ stock_symbol = st.sidebar.text_input("Stock Symbol", "AAPL")
 
 # Date range selection
 today = datetime.today()
-start_date = st.sidebar.date_input("Start Date", today - timedelta(days=365*3))
-end_date = st.sidebar.date_input("End Date", today)
+start_date = st.sidebar.date_input("Start Date", today - timedelta(days=365))
+end_date = st.sidebar.date_input("End Date", today-timedelta(days=1))
 
 # Prediction parameters
 prediction_days = st.sidebar.slider("Prediction Window (Days)", 7, 90, 30)
@@ -51,6 +51,7 @@ models_to_use = st.sidebar.multiselect(
 def load_data(ticker, start, end):
     try:
         data = yf.download(ticker, start=start, end=end)
+        print(data)
         if data.empty:
             st.error(f"No data found for {ticker}. Please check the stock symbol.")
             return None
