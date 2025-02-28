@@ -4,20 +4,19 @@
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
-from typing import TypedDict, Optional
+from typing import TypedDict, Optional, List, Dict, Any
+import uuid
 
 # LangChain imports
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-
-# from langchain_community.embeddings import OllamaEmbeddings
 from langchain_community.llms import Ollama
 from langchain_community.vectorstores import FAISS
-from langchain.chains import ConversationalRetrievalChain
-from langchain.memory import ConversationBufferMemory
 from langchain_ollama import OllamaLLM, OllamaEmbeddings
 
 # LangGraph imports
 import langgraph.graph as lg
+from langgraph.graph import END
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage
 
 
 # ============================================================
@@ -30,6 +29,15 @@ class WebpageChatState(TypedDict):
     webpage_content: Optional[str]
     approach: Optional[str]
     error: Optional[str]
+
+
+class ChatState(TypedDict):
+    """State structure for the chat workflow."""
+
+    messages: List[BaseMessage]
+    context: Optional[str]
+    question: Optional[str]
+    answer: Optional[str]
 
 
 # ============================================================
@@ -155,13 +163,26 @@ def setup_full_context_chat(content, model_name):
     # Initialize the LLM
     llm = OllamaLLM(model=model_name)
 
-    def get_response(query):
+    def get_response(query, chat_history=None):
         """Generate a response to the user's query."""
+        if chat_history is None:
+            chat_history = []
+
+        # Format chat history for context
+        chat_context = ""
+        if chat_history:
+            for msg in chat_history:
+                role = "User" if msg["role"] == "user" else "Assistant"
+                chat_context += f"{role}: {msg['content']}\n"
+
         prompt = f"""
         You are an AI assistant that helps users understand and extract information from webpages.
 
         Webpage content:
         {content}
+        
+        Previous conversation:
+        {chat_context}
 
         Answer the user's question based on this webpage content. If the information is not in the content, say so.
 
@@ -181,7 +202,7 @@ def setup_embeddings_chat(content, model_name):
         model_name: The Ollama model to use
 
     Returns:
-        ConversationalRetrievalChain for answering queries
+        Function that generates responses to queries
     """
     # Split text into manageable chunks
     text_splitter = RecursiveCharacterTextSplitter(
@@ -194,11 +215,41 @@ def setup_embeddings_chat(content, model_name):
     vectorstore = FAISS.from_texts(texts=chunks, embedding=embeddings)
     retriever = vectorstore.as_retriever()
 
-    # Create and return the conversational chain
+    # Initialize the LLM
     llm = OllamaLLM(model=model_name)
-    qa_chain = ConversationalRetrievalChain.from_llm(llm=llm, retriever=retriever)
 
-    return qa_chain
+    def get_response(query, chat_history=None):
+        """Generate a response to the user's query using retrieval."""
+        if chat_history is None:
+            chat_history = []
+
+        # Format chat history for context
+        chat_context = ""
+        if chat_history:
+            for msg in chat_history:
+                role = "User" if msg["role"] == "user" else "Assistant"
+                chat_context += f"{role}: {msg['content']}\n"
+
+        # Retrieve relevant documents
+        relevant_docs = retriever.get_relevant_documents(query)
+        retrieved_content = "\n\n".join([doc.page_content for doc in relevant_docs])
+
+        prompt = f"""
+        You are an AI assistant that helps users understand and extract information from webpages.
+
+        Relevant webpage content:
+        {retrieved_content}
+        
+        Previous conversation:
+        {chat_context}
+
+        Answer the user's question based on this webpage content. If the information is not in the content, say so.
+
+        User's question: {query}
+        """
+        return llm.invoke(prompt)
+
+    return get_response
 
 
 # ============================================================
@@ -363,11 +414,9 @@ def process_user_input(user_input):
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
             # Get response based on the chosen approach
-            if st.session_state.approach == "full_context":
-                response = st.session_state.chat_engine(user_input)
-            else:  # embeddings approach
-                result = st.session_state.chat_engine.invoke({"question": user_input})
-                response = result["answer"]
+            response = st.session_state.chat_engine(
+                user_input, st.session_state.messages[:-1]
+            )
 
             # Display the response
             st.write(response)
@@ -414,7 +463,7 @@ def main():
     # Handle clear history button
     if sidebar_config["clear_history"]:
         st.session_state.messages = []
-        st.rerun()
+        st.experimental_rerun()
 
     # Render URL input and get values
     input_config = render_url_input()
