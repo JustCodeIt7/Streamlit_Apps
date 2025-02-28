@@ -306,7 +306,7 @@ def main():
     )
 
     # URL input
-    url = st.text_input("Enter website URL:", "https://example.com")
+    url = st.text_input("Enter website URL:", "https://docs.streamlit.io/")
 
     # Initialize session state
     if "messages" not in st.session_state:
