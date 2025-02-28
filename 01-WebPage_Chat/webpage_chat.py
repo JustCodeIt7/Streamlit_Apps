@@ -8,12 +8,13 @@ from typing import TypedDict, Optional
 
 # LangChain imports
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import OllamaEmbeddings
+
+# from langchain_community.embeddings import OllamaEmbeddings
 from langchain_community.llms import Ollama
 from langchain_community.vectorstores import FAISS
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
-from langchain_ollama import OllamaLLM
+from langchain_ollama import OllamaLLM, OllamaEmbeddings
 
 # LangGraph imports
 import langgraph.graph as lg
@@ -193,34 +194,51 @@ def setup_embeddings_chat(content, model_name):
     vectorstore = FAISS.from_texts(texts=chunks, embedding=embeddings)
     retriever = vectorstore.as_retriever()
 
-    # Create memory for conversation history
-    memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-
     # Create and return the conversational chain
     llm = OllamaLLM(model=model_name)
-    qa_chain = ConversationalRetrievalChain.from_llm(
-        llm=llm, retriever=retriever, memory=memory
-    )
+    qa_chain = ConversationalRetrievalChain.from_llm(llm=llm, retriever=retriever)
 
     return qa_chain
 
 
 # ============================================================
-# STREAMLIT UI
+# STREAMLIT UI COMPONENTS
 # ============================================================
-def main():
-    """Main Streamlit application."""
-    st.title("Webpage Chat with LangGraph and Ollama")
+def initialize_session_state():
+    """Initialize session state variables."""
+    if "current_model" not in st.session_state:
+        st.session_state.current_model = None
 
-    # ---- SIDEBAR CONFIGURATION ----
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    if "chat_initialized" not in st.session_state:
+        st.session_state.chat_initialized = False
+
+    if "webpage_content" not in st.session_state:
+        st.session_state.webpage_content = None
+
+
+def render_sidebar():
+    """Render the sidebar with settings and controls."""
     st.sidebar.header("Settings")
 
     # Model selection dropdown
+    model_options = [
+        "deepseek-r1:1.5b",
+        "llama3.2:1b",
+        "deepseek-r1:14b",
+        "qwen2.5:0.5b",
+    ]
     model_name = st.sidebar.selectbox(
         "Select Ollama model:",
-        ["deepseek-r1:1.5b", "llama3.2:1b", "deepseek-r1:14b", "qwen2.5:0.5b"],
+        model_options,
         index=0,
     )
+
+    # Detect model change
+    model_changed = st.session_state.current_model != model_name
+    st.session_state.current_model = model_name
     st.session_state.model_name = model_name
 
     # Text threshold slider
@@ -234,95 +252,191 @@ def main():
     )
     st.session_state.text_threshold = text_threshold
 
-    # ---- MAIN UI ----
-    # URL input field
-    url = st.text_input("Enter webpage URL:", "https://example.com")
+    # Add option to clear chat history
+    clear_history = st.sidebar.button("Clear Chat History")
 
-    # Initialize session state variables
-    if "messages" not in st.session_state:
+    return {
+        "model_name": model_name,
+        "model_changed": model_changed,
+        "text_threshold": text_threshold,
+        "clear_history": clear_history,
+    }
+
+
+def render_url_input():
+    """Render the URL input field and process button."""
+    url = st.text_input("Enter webpage URL:", "https://docs.streamlit.io/")
+    process_button = st.button("Process Webpage")
+
+    return {"url": url, "process_button": process_button}
+
+
+def process_webpage(url, model_name, text_threshold):
+    """Process a webpage and set up the chat engine."""
+    with st.spinner("Processing webpage..."):
+        # Set up and run the LangGraph workflow
+        processor = build_webpage_processor()
+
+        # Process the webpage
+        result = processor.invoke(
+            {"url": url, "webpage_content": None, "approach": None, "error": None}
+        )
+
+        # Handle errors
+        if result.get("error"):
+            st.error(result["error"])
+            return False
+
+        # Reset chat history
         st.session_state.messages = []
 
-    if "chat_initialized" not in st.session_state:
-        st.session_state.chat_initialized = False
+        # Store the webpage content and approach
+        content = result["webpage_content"]
+        approach = "full_context" if len(content) < text_threshold else "embeddings"
 
-    # ---- WEBPAGE PROCESSING ----
-    if st.button("Process Webpage"):
-        with st.spinner("Processing webpage..."):
-            # Set up and run the LangGraph workflow
-            processor = build_webpage_processor()
+        # Store content for potential reprocessing
+        st.session_state.webpage_content = content
+        st.session_state.webpage_url = url
 
-            # Process the webpage
-            result = processor.invoke(
-                {"url": url, "webpage_content": None, "approach": None, "error": None}
-            )
+        # Set up appropriate chat engine based on approach
+        if approach == "full_context":
+            st.session_state.chat_engine = setup_full_context_chat(content, model_name)
+        else:  # embeddings approach
+            st.session_state.chat_engine = setup_embeddings_chat(content, model_name)
 
-            # Handle errors
-            if result.get("error"):
-                st.error(result["error"])
-            else:
-                # Reset chat history
-                st.session_state.messages = []
+        # Update session state
+        st.session_state.chat_initialized = True
+        st.session_state.approach = approach
+        st.success(f"Webpage processed successfully! Using {approach} approach.")
 
-                # Store the webpage content and approach
-                content = result["webpage_content"]
-                approach = result["approach"]
+        return True
 
-                # Set up appropriate chat engine based on approach
-                if approach == "full_context":
-                    st.session_state.chat_engine = setup_full_context_chat(
-                        content, model_name
-                    )
-                else:  # embeddings approach
-                    st.session_state.chat_engine = setup_embeddings_chat(
-                        content, model_name
-                    )
 
-                # Update session state
-                st.session_state.chat_initialized = True
-                st.session_state.approach = approach
-                st.success(
-                    f"Webpage processed successfully! Using {approach} approach."
-                )
+def reinitialize_chat_engine(model_name, text_threshold):
+    """Reinitialize the chat engine with a new model."""
+    with st.spinner(f"Reinitializing with model {model_name}..."):
+        content = st.session_state.webpage_content
+        approach = "full_context" if len(content) < text_threshold else "embeddings"
 
-    # ---- CHAT INTERFACE ----
+        # Set up appropriate chat engine based on approach
+        if approach == "full_context":
+            st.session_state.chat_engine = setup_full_context_chat(content, model_name)
+        else:  # embeddings approach
+            st.session_state.chat_engine = setup_embeddings_chat(content, model_name)
+
+        # Update session state
+        st.session_state.approach = approach
+        st.success(f"Chat engine reinitialized with model {model_name}!")
+
+
+def render_chat_interface():
+    """Render the chat interface for interacting with the webpage."""
+    st.info(
+        f"Current approach: {st.session_state.approach} | Model: {st.session_state.current_model}"
+    )
+
+    if hasattr(st.session_state, "webpage_url"):
+        st.info(f"Current webpage: {st.session_state.webpage_url}")
+
+    # Display chat message history
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.write(message["content"])
+
+    # Chat input for user queries
+    user_input = st.chat_input("Ask about the webpage:")
+
+    if user_input:
+        process_user_input(user_input)
+
+
+def process_user_input(user_input):
+    """Process user input and generate a response."""
+    # Add user message to chat history
+    st.session_state.messages.append({"role": "user", "content": user_input})
+
+    # Display user message
+    with st.chat_message("user"):
+        st.write(user_input)
+
+    # Generate and display assistant response
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
+            # Get response based on the chosen approach
+            if st.session_state.approach == "full_context":
+                response = st.session_state.chat_engine(user_input)
+            else:  # embeddings approach
+                result = st.session_state.chat_engine.invoke({"question": user_input})
+                response = result["answer"]
+
+            # Display the response
+            st.write(response)
+
+            # Add assistant response to chat history
+            st.session_state.messages.append({"role": "assistant", "content": response})
+
+
+def render_welcome_message():
+    """Render a welcome message when no webpage is loaded."""
+    st.markdown(
+        """
+    ### 👋 Welcome to Webpage Chat!
+    
+    This app allows you to chat with any webpage using Ollama models.
+    
+    **To get started:**
+    1. Enter a URL in the text field above
+    2. Click "Process Webpage"
+    3. Ask questions about the webpage content
+    
+    The app will automatically choose between using the full webpage content or 
+    creating embeddings based on the content length.
+    """
+    )
+
+
+# ============================================================
+# MAIN APPLICATION
+# ============================================================
+def main():
+    """Main Streamlit application."""
+    st.title("Webpage Chat with LangGraph and Ollama")
+
+    # Initialize session state
+    initialize_session_state()
+
+    # Render sidebar and get settings
+    sidebar_config = render_sidebar()
+    model_name = sidebar_config["model_name"]
+    model_changed = sidebar_config["model_changed"]
+    text_threshold = sidebar_config["text_threshold"]
+
+    # Handle clear history button
+    if sidebar_config["clear_history"]:
+        st.session_state.messages = []
+        st.rerun()
+
+    # Render URL input and get values
+    input_config = render_url_input()
+    url = input_config["url"]
+    process_button = input_config["process_button"]
+
+    # Determine if we need to reprocess due to model change
+    reprocess = model_changed and st.session_state.chat_initialized
+    if reprocess:
+        st.warning(f"Model changed to {model_name}. Reinitializing chat engine...")
+
+    # Process webpage or reinitialize chat engine
+    if process_button:
+        process_webpage(url, model_name, text_threshold)
+    elif reprocess and st.session_state.webpage_content:
+        reinitialize_chat_engine(model_name, text_threshold)
+
+    # Render chat interface or welcome message
     if st.session_state.chat_initialized:
-        st.info(f"Current approach: {st.session_state.approach}")
-
-        # Display chat message history
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.write(message["content"])
-
-        # Chat input for user queries
-        user_input = st.chat_input("Ask about the webpage:")
-
-        if user_input:
-            # Add user message to chat history
-            st.session_state.messages.append({"role": "user", "content": user_input})
-
-            # Display user message
-            with st.chat_message("user"):
-                st.write(user_input)
-
-            # Generate and display assistant response
-            with st.chat_message("assistant"):
-                with st.spinner("Thinking..."):
-                    # Get response based on the chosen approach
-                    if st.session_state.approach == "full_context":
-                        response = st.session_state.chat_engine(user_input)
-                    else:  # embeddings approach
-                        result = st.session_state.chat_engine.invoke(
-                            {"question": user_input}
-                        )
-                        response = result["answer"]
-
-                    # Display the response
-                    st.write(response)
-
-                    # Add assistant response to chat history
-                    st.session_state.messages.append(
-                        {"role": "assistant", "content": response}
-                    )
+        render_chat_interface()
+    else:
+        render_welcome_message()
 
 
 # ============================================================
