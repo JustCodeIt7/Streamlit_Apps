@@ -1,40 +1,61 @@
+# ============================================================
+# IMPORTS
+# ============================================================
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
+from typing import TypedDict, Optional
+
+# LangChain imports
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import OllamaEmbeddings
 from langchain_community.llms import Ollama
 from langchain_community.vectorstores import FAISS
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
+
+# LangGraph imports
 import langgraph.graph as lg
-from typing import TypedDict, Optional
 
-
-# Define the state structure for LangGraph
+# ============================================================
+# DATA STRUCTURES
+# ============================================================
 class WebpageChatState(TypedDict):
+    """State structure for the LangGraph workflow."""
     url: str
     webpage_content: Optional[str]
     approach: Optional[str]
     error: Optional[str]
 
-
-# Function to extract text from a webpage
+# ============================================================
+# WEBPAGE CONTENT EXTRACTION
+# ============================================================
 def extract_webpage_content(url):
+    """
+    Extract and clean text content from a webpage.
+
+    Args:
+        url: The URL of the webpage to extract content from
+
+    Returns:
+        tuple: (extracted_text, error_message)
+    """
     try:
+        # Fetch the webpage
         response = requests.get(url)
         response.raise_for_status()
 
+        # Parse HTML with BeautifulSoup
         soup = BeautifulSoup(response.text, "html.parser")
 
         # Remove script and style elements
         for script in soup(["script", "style"]):
             script.decompose()
 
-        # Extract text
+        # Extract text content
         text = soup.get_text()
 
-        # Clean text
+        # Clean the extracted text
         lines = (line.strip() for line in text.splitlines())
         chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
         text = "\n".join(chunk for chunk in chunks if chunk)
@@ -43,10 +64,19 @@ def extract_webpage_content(url):
     except Exception as e:
         return None, f"Error fetching webpage: {str(e)}"
 
-
-# Define LangGraph nodes as normal functions (without decorators)
+# ============================================================
+# LANGGRAPH WORKFLOW
+# ============================================================
 def fetch_webpage(state: WebpageChatState) -> WebpageChatState:
-    """Fetch content from a webpage."""
+    """
+    LangGraph node: Fetch content from a webpage.
+
+    Args:
+        state: Current workflow state
+
+    Returns:
+        Updated workflow state
+    """
     url = state["url"]
     content, error = extract_webpage_content(url)
 
@@ -55,44 +85,69 @@ def fetch_webpage(state: WebpageChatState) -> WebpageChatState:
 
     return {**state, "webpage_content": content, "error": None}
 
-
 def determine_approach(state: WebpageChatState) -> WebpageChatState:
-    """Determine whether to use full context or embeddings."""
+    """
+    LangGraph node: Determine whether to use full context or embeddings.
+
+    Args:
+        state: Current workflow state
+
+    Returns:
+        Updated workflow state with chosen approach
+    """
     if state.get("error"):
         return state
 
     content = state["webpage_content"]
     threshold = st.session_state.get("text_threshold", 4000)
 
+    # Choose approach based on content length
     approach = "full_context" if len(content) < threshold else "embeddings"
 
     return {**state, "approach": approach}
 
-
-# Build the LangGraph workflow
 def build_webpage_processor():
-    """Build a graph for processing webpages."""
+    """
+    Build a LangGraph workflow for processing webpages.
+
+    Returns:
+        Compiled LangGraph workflow
+    """
+    # Create a new state graph
     workflow = lg.StateGraph(WebpageChatState)
 
-    # Add nodes to the graph explicitly (instead of using decorators)
+    # Add nodes to the graph
     workflow.add_node("fetch_webpage", fetch_webpage)
     workflow.add_node("determine_approach", determine_approach)
 
-    # Add edges
+    # Add edges between nodes
     workflow.add_edge("fetch_webpage", "determine_approach")
 
-    # Set entry point
+    # Set the entry point
     workflow.set_entry_point("fetch_webpage")
 
-    # Compile the graph
+    # Compile and return the graph
     return workflow.compile()
 
-
-# Function to set up full context chat
+# ============================================================
+# CHAT ENGINES
+# ============================================================
 def setup_full_context_chat(content, model_name):
+    """
+    Set up a chat engine that uses the full webpage content.
+
+    Args:
+        content: The webpage content
+        model_name: The Ollama model to use
+
+    Returns:
+        Function that generates responses to queries
+    """
+    # Initialize the LLM
     llm = Ollama(model=model_name)
 
     def get_response(query):
+        """Generate a response to the user's query."""
         prompt = f"""
         You are an AI assistant that helps users understand and extract information from webpages.
 
@@ -107,12 +162,22 @@ def setup_full_context_chat(content, model_name):
 
     return get_response
 
-
-# Function to set up embeddings-based chat
 def setup_embeddings_chat(content, model_name):
-    # Split text into chunks
+    """
+    Set up a chat engine that uses embeddings and retrieval.
+
+    Args:
+        content: The webpage content
+        model_name: The Ollama model to use
+
+    Returns:
+        ConversationalRetrievalChain for answering queries
+    """
+    # Split text into manageable chunks
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000, chunk_overlap=100, length_function=len
+        chunk_size=1000,
+        chunk_overlap=100,
+        length_function=len
     )
     chunks = text_splitter.split_text(content)
 
@@ -124,24 +189,27 @@ def setup_embeddings_chat(content, model_name):
     # Create memory for conversation history
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 
-    # Create conversational chain
+    # Create and return the conversational chain
+    llm = Ollama(model=model_name)
     qa_chain = ConversationalRetrievalChain.from_llm(
-        "Select Ollama model:",
-        ["deepseek-r1:1.5b", "llama3.2:1b", "deepseek-r1:14b", "qwen2.5:0.5b"],
-        index=0,
+        llm=llm,
+        retriever=retriever,
+        memory=memory
     )
 
     return qa_chain
 
-
-# Streamlit app
+# ============================================================
+# STREAMLIT UI
+# ============================================================
 def main():
+    """Main Streamlit application."""
     st.title("Webpage Chat with LangGraph and Ollama")
 
-    # Sidebar for configuration
+    # ---- SIDEBAR CONFIGURATION ----
     st.sidebar.header("Settings")
 
-    # Model selection
+    # Model selection dropdown
     model_name = st.sidebar.selectbox(
         "Select Ollama model:",
         ["deepseek-r1:1.5b", "llama3.2:1b", "deepseek-r1:14b", "qwen2.5:0.5b"],
@@ -149,7 +217,7 @@ def main():
     )
     st.session_state.model_name = model_name
 
-    # Text threshold setting
+    # Text threshold slider
     text_threshold = st.sidebar.slider(
         "Text length threshold (characters)",
         min_value=1000,
@@ -160,93 +228,91 @@ def main():
     )
     st.session_state.text_threshold = text_threshold
 
-    # URL input
+    # ---- MAIN UI ----
+    # URL input field
     url = st.text_input("Enter webpage URL:", "https://example.com")
 
-    # Initialize session state
+    # Initialize session state variables
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
     if "chat_initialized" not in st.session_state:
         st.session_state.chat_initialized = False
 
-    # Process button
+    # ---- WEBPAGE PROCESSING ----
     if st.button("Process Webpage"):
         with st.spinner("Processing webpage..."):
-            # Set up the LangGraph workflow
+            # Set up and run the LangGraph workflow
             processor = build_webpage_processor()
 
-            # Process the webpage using LangGraph
-            result = processor.invoke(
-                {"url": url, "webpage_content": None, "approach": None, "error": None}
-            )
+            # Process the webpage
+            result = processor.invoke({
+                "url": url,
+                "webpage_content": None,
+                "approach": None,
+                "error": None
+            })
 
+            # Handle errors
             if result.get("error"):
                 st.error(result["error"])
             else:
-                # Reset chat
+                # Reset chat history
                 st.session_state.messages = []
 
                 # Store the webpage content and approach
                 content = result["webpage_content"]
                 approach = result["approach"]
 
-                # Set up chat based on approach
+                # Set up appropriate chat engine based on approach
                 if approach == "full_context":
-                    st.session_state.chat_engine = setup_full_context_chat(
-                        content, model_name
-                    )
-                else:
-                    st.session_state.chat_engine = setup_embeddings_chat(
-                        content, model_name
-                    )
+                    st.session_state.chat_engine = setup_full_context_chat(content, model_name)
+                else:  # embeddings approach
+                    st.session_state.chat_engine = setup_embeddings_chat(content, model_name)
 
+                # Update session state
                 st.session_state.chat_initialized = True
                 st.session_state.approach = approach
-                st.success(
-                    f"Webpage processed successfully! Using {approach} approach."
-                )
+                st.success(f"Webpage processed successfully! Using {approach} approach.")
 
-    # Display chat interface if initialized
+    # ---- CHAT INTERFACE ----
     if st.session_state.chat_initialized:
         st.info(f"Current approach: {st.session_state.approach}")
 
-        # Display chat messages
+        # Display chat message history
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
                 st.write(message["content"])
 
-        # Input for user query
+        # Chat input for user queries
         user_input = st.chat_input("Ask about the webpage:")
 
         if user_input:
-            # Add user message to chat
+            # Add user message to chat history
             st.session_state.messages.append({"role": "user", "content": user_input})
 
             # Display user message
             with st.chat_message("user"):
                 st.write(user_input)
 
-            # Generate response
+            # Generate and display assistant response
             with st.chat_message("assistant"):
                 with st.spinner("Thinking..."):
-                    # Get response based on approach
+                    # Get response based on the chosen approach
                     if st.session_state.approach == "full_context":
                         response = st.session_state.chat_engine(user_input)
                     else:  # embeddings approach
-                        result = st.session_state.chat_engine.invoke(
-                            {"question": user_input}
-                        )
+                        result = st.session_state.chat_engine.invoke({"question": user_input})
                         response = result["answer"]
 
-                    # Display response
+                    # Display the response
                     st.write(response)
 
-                    # Add assistant response to chat
-                    st.session_state.messages.append(
-                        {"role": "assistant", "content": response}
-                    )
+                    # Add assistant response to chat history
+                    st.session_state.messages.append({"role": "assistant", "content": response})
 
-
+# ============================================================
+# APP ENTRY POINT
+# ============================================================
 if __name__ == "__main__":
     main()
