@@ -13,19 +13,23 @@ from langchain_community.llms import Ollama
 from langchain_community.vectorstores import FAISS
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
+from langchain_ollama import OllamaLLM
 
 # LangGraph imports
 import langgraph.graph as lg
+
 
 # ============================================================
 # DATA STRUCTURES
 # ============================================================
 class WebpageChatState(TypedDict):
     """State structure for the LangGraph workflow."""
+
     url: str
     webpage_content: Optional[str]
     approach: Optional[str]
     error: Optional[str]
+
 
 # ============================================================
 # WEBPAGE CONTENT EXTRACTION
@@ -64,6 +68,7 @@ def extract_webpage_content(url):
     except Exception as e:
         return None, f"Error fetching webpage: {str(e)}"
 
+
 # ============================================================
 # LANGGRAPH WORKFLOW
 # ============================================================
@@ -85,6 +90,7 @@ def fetch_webpage(state: WebpageChatState) -> WebpageChatState:
 
     return {**state, "webpage_content": content, "error": None}
 
+
 def determine_approach(state: WebpageChatState) -> WebpageChatState:
     """
     LangGraph node: Determine whether to use full context or embeddings.
@@ -105,6 +111,7 @@ def determine_approach(state: WebpageChatState) -> WebpageChatState:
     approach = "full_context" if len(content) < threshold else "embeddings"
 
     return {**state, "approach": approach}
+
 
 def build_webpage_processor():
     """
@@ -129,6 +136,7 @@ def build_webpage_processor():
     # Compile and return the graph
     return workflow.compile()
 
+
 # ============================================================
 # CHAT ENGINES
 # ============================================================
@@ -144,7 +152,7 @@ def setup_full_context_chat(content, model_name):
         Function that generates responses to queries
     """
     # Initialize the LLM
-    llm = Ollama(model=model_name)
+    llm = OllamaLLM(model=model_name)
 
     def get_response(query):
         """Generate a response to the user's query."""
@@ -162,6 +170,7 @@ def setup_full_context_chat(content, model_name):
 
     return get_response
 
+
 def setup_embeddings_chat(content, model_name):
     """
     Set up a chat engine that uses embeddings and retrieval.
@@ -175,9 +184,7 @@ def setup_embeddings_chat(content, model_name):
     """
     # Split text into manageable chunks
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=100,
-        length_function=len
+        chunk_size=1000, chunk_overlap=100, length_function=len
     )
     chunks = text_splitter.split_text(content)
 
@@ -190,14 +197,13 @@ def setup_embeddings_chat(content, model_name):
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 
     # Create and return the conversational chain
-    llm = Ollama(model=model_name)
+    llm = OllamaLLM(model=model_name)
     qa_chain = ConversationalRetrievalChain.from_llm(
-        llm=llm,
-        retriever=retriever,
-        memory=memory
+        llm=llm, retriever=retriever, memory=memory
     )
 
     return qa_chain
+
 
 # ============================================================
 # STREAMLIT UI
@@ -246,12 +252,9 @@ def main():
             processor = build_webpage_processor()
 
             # Process the webpage
-            result = processor.invoke({
-                "url": url,
-                "webpage_content": None,
-                "approach": None,
-                "error": None
-            })
+            result = processor.invoke(
+                {"url": url, "webpage_content": None, "approach": None, "error": None}
+            )
 
             # Handle errors
             if result.get("error"):
@@ -266,14 +269,20 @@ def main():
 
                 # Set up appropriate chat engine based on approach
                 if approach == "full_context":
-                    st.session_state.chat_engine = setup_full_context_chat(content, model_name)
+                    st.session_state.chat_engine = setup_full_context_chat(
+                        content, model_name
+                    )
                 else:  # embeddings approach
-                    st.session_state.chat_engine = setup_embeddings_chat(content, model_name)
+                    st.session_state.chat_engine = setup_embeddings_chat(
+                        content, model_name
+                    )
 
                 # Update session state
                 st.session_state.chat_initialized = True
                 st.session_state.approach = approach
-                st.success(f"Webpage processed successfully! Using {approach} approach.")
+                st.success(
+                    f"Webpage processed successfully! Using {approach} approach."
+                )
 
     # ---- CHAT INTERFACE ----
     if st.session_state.chat_initialized:
@@ -302,14 +311,19 @@ def main():
                     if st.session_state.approach == "full_context":
                         response = st.session_state.chat_engine(user_input)
                     else:  # embeddings approach
-                        result = st.session_state.chat_engine.invoke({"question": user_input})
+                        result = st.session_state.chat_engine.invoke(
+                            {"question": user_input}
+                        )
                         response = result["answer"]
 
                     # Display the response
                     st.write(response)
 
                     # Add assistant response to chat history
-                    st.session_state.messages.append({"role": "assistant", "content": response})
+                    st.session_state.messages.append(
+                        {"role": "assistant", "content": response}
+                    )
+
 
 # ============================================================
 # APP ENTRY POINT
