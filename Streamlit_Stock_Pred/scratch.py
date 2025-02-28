@@ -1,22 +1,24 @@
-#%%
+# %%
 import yfinance as yf
 import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
-#%%
+
+# %%
 import yfinance as yf
+
 dat = yf.Ticker("MSFT")
 
 # %%
 print(dat)
 # %%
-df = dat.history(period='1mo')
+df = dat.history(period="1mo")
 print(df)
 
 # %%
-tickers = yf.Tickers('MSFT AAPL GOOG')
-tickers.tickers['MSFT'].info
-yf.download(['MSFT', 'AAPL', 'GOOG'], period='1mo')
+tickers = yf.Tickers("MSFT AAPL GOOG")
+tickers.tickers["MSFT"].info
+yf.download(["MSFT", "AAPL", "GOOG"], period="1mo")
 
 
 # %%
@@ -25,8 +27,9 @@ dat.info
 dat.calendar
 dat.analyst_price_targets
 dat.quarterly_income_stmt
-dat.history(period='1mo')
+dat.history(period="1mo")
 dat.option_chain(dat.options[0]).calls
+
 # %%
 import yfinance as yf
 
