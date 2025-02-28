@@ -108,14 +108,58 @@ def setup_embeddings_chat(content, model_name):
 
 
 # ============================================================
-# STREAMLIT UI
+# STREAMLIT UI COMPONENTS
+# ============================================================
+def initialize_session_state():
+    """Initialize session state variables."""
+
+
+def render_sidebar():
+    """Render the sidebar with settings and controls."""
+
+
+def render_url_input():
+    """Render the URL input field and process button."""
+
+
+def process_webpage(url, model_name, text_threshold):
+    """Process a webpage and set up the chat engine."""
+
+
+def reinitialize_chat_engine(model_name, text_threshold):
+    """Reinitialize the chat engine with a new model."""
+
+
+def render_chat_interface():
+    """Render the chat interface for interacting with the webpage."""
+
+
+def process_user_input(user_input):
+    """Process user input and generate a response."""
+
+
+def render_welcome_message():
+    """Render a welcome message when no webpage is loaded."""
+    st.markdown(
+        """
+    ### 👋 Welcome to Webpage Chat!
+    
+    This app allows you to chat with any webpage using Ollama models.
+    
+    **To get started:**
+    1. Enter a URL in the text field above
+    2. Click "Process Webpage"
+    3. Ask questions about the webpage content
+    """
+    )
+
+
+# ============================================================
+# MAIN APPLICATION
 # ============================================================
 def main():
     """Main Streamlit application."""
     st.title("Webpage Chat with LangGraph and Ollama")
-
-    # ---- SIDEBAR CONFIGURATION ----
-    st.sidebar.header("Settings")
 
 
 # ============================================================
