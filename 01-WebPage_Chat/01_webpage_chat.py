@@ -4,32 +4,39 @@
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
-from typing import TypedDict, Optional
+from typing import TypedDict, Optional, List, Dict, Any
+import uuid
 
 # LangChain imports
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import OllamaEmbeddings
 from langchain_community.llms import Ollama
 from langchain_community.vectorstores import FAISS
-from langchain.chains import ConversationalRetrievalChain
-from langchain.memory import ConversationBufferMemory
+from langchain_ollama import OllamaLLM, OllamaEmbeddings
 
 # LangGraph imports
 import langgraph.graph as lg
+from langgraph.graph import END
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage
 
 
 # ============================================================
 # DATA STRUCTURES
 # ============================================================
+
+
 class WebpageChatState(TypedDict):
-    """State structure for the LangGraph workflow.
-    This state includes the URL, the extracted webpage content, the chosen approach, and any potential errors.
-    """
+    """State structure for the LangGraph workflow."""
+
+
+class ChatState(TypedDict):
+    """State structure for the chat workflow."""
 
 
 # ============================================================
 # WEBPAGE CONTENT EXTRACTION
 # ============================================================
+
+
 def extract_webpage_content(url):
     """
     Extract and clean text content from a webpage.
@@ -45,6 +52,8 @@ def extract_webpage_content(url):
 # ============================================================
 # LANGGRAPH WORKFLOW
 # ============================================================
+
+
 def fetch_webpage(state: WebpageChatState) -> WebpageChatState:
     """
     LangGraph node: Fetch content from a webpage.
@@ -81,6 +90,8 @@ def build_webpage_processor():
 # ============================================================
 # CHAT ENGINES
 # ============================================================
+
+
 def setup_full_context_chat(content, model_name):
     """
     Set up a chat engine that uses the full webpage content.
@@ -93,6 +104,9 @@ def setup_full_context_chat(content, model_name):
         Function that generates responses to queries
     """
 
+    def get_response(query, chat_history=None):
+        """Generate a response to the user's query."""
+
 
 def setup_embeddings_chat(content, model_name):
     """
@@ -103,13 +117,18 @@ def setup_embeddings_chat(content, model_name):
         model_name: The Ollama model to use
 
     Returns:
-        ConversationalRetrievalChain for answering queries
+        Function that generates responses to queries
     """
+
+    def get_response(query, chat_history=None):
+        """Generate a response to the user's query using retrieval."""
 
 
 # ============================================================
 # STREAMLIT UI COMPONENTS
 # ============================================================
+
+
 def initialize_session_state():
     """Initialize session state variables."""
 
@@ -140,25 +159,16 @@ def process_user_input(user_input):
 
 def render_welcome_message():
     """Render a welcome message when no webpage is loaded."""
-    st.markdown(
-        """
-    ### 👋 Welcome to Webpage Chat!
-    
-    This app allows you to chat with any webpage using Ollama models.
-    
-    **To get started:**
-    1. Enter a URL in the text field above
-    2. Click "Process Webpage"
-    3. Ask questions about the webpage content
-    """
-    )
 
 
 # ============================================================
 # MAIN APPLICATION
 # ============================================================
+
+
 def main():
     """Main Streamlit application."""
+
     st.title("Webpage Chat with LangGraph and Ollama")
 
 
