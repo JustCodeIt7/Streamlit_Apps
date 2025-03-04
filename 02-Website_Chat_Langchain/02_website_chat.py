@@ -2,8 +2,8 @@ import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 import re
-import urllib.parse
-from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import urljoin, urlparse
+import time
 from langchain_community.document_loaders import WebBaseLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
@@ -22,8 +22,6 @@ def initialize_session_state():
         st.session_state.chat_history = []
     if "crawled_urls" not in st.session_state:
         st.session_state.crawled_urls = set()
-    if "crawl_in_progress" not in st.session_state:
-        st.session_state.crawl_in_progress = False
 
 
 def setup_page_config():
@@ -64,97 +62,129 @@ def create_sidebar_config():
             "chunk_overlap": st.slider(
                 "Chunk overlap", min_value=0, max_value=500, value=50, step=10
             ),
-            "crawl_depth": st.slider(
-                "Crawl depth",
-                min_value=1,
-                max_value=5,
-                value=2,
-                step=1,
-                help="How many links deep to crawl from the starting URL",
-            ),
+            # Web crawling parameters
             "max_pages": st.slider(
-                "Maximum pages to crawl",
-                min_value=1,
-                max_value=50,
-                value=10,
-                step=1,
-                help="Maximum number of pages to crawl",
+                "Maximum pages to crawl", min_value=1, max_value=50, value=5, step=1
             ),
-            "same_domain_only": st.checkbox(
-                "Crawl same domain only",
-                value=True,
-                help="Only crawl pages from the same domain as the starting URL",
+            "crawl_depth": st.slider(
+                "Crawling depth", min_value=1, max_value=3, value=1, step=1
             ),
+            "exclude_patterns": st.text_input(
+                "URL patterns to exclude (comma-separated)",
+                value="login,signup,register,cart,checkout,account",
+            ).split(","),
         }
         return config
 
 
 # ============= Web Crawling Component =============
-def get_domain(url):
-    """Extract the domain from a URL."""
-    parsed_url = urllib.parse.urlparse(url)
-    return parsed_url.netloc
-
-
-def is_valid_url(url, base_domain, same_domain_only):
-    """Check if a URL is valid for crawling."""
-    # Basic URL validation
-    if not url or not url.startswith(("http://", "https://")):
-        return False
-
-    # Check if URL is from the same domain if required
-    if same_domain_only:
-        url_domain = get_domain(url)
-        if url_domain != base_domain:
-            return False
-
-    # Skip URLs that are likely to be files or non-HTML content
-    file_extensions = [
-        ".pdf",
-        ".jpg",
-        ".jpeg",
-        ".png",
-        ".gif",
-        ".doc",
-        ".docx",
-        ".xls",
-        ".xlsx",
-        ".zip",
-        ".tar",
-        ".gz",
-    ]
-    if any(url.lower().endswith(ext) for ext in file_extensions):
-        return False
-
-    return True
-
-
-def extract_links_from_page(url, base_domain, same_domain_only):
-    """Extract all links from a webpage."""
+def is_valid_url(url):
+    """Check if URL is valid and reachable."""
     try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-
-        soup = BeautifulSoup(response.text, "html.parser")
-        links = []
-
-        for a_tag in soup.find_all("a", href=True):
-            href = a_tag["href"]
-
-            # Handle relative URLs
-            if href.startswith("/"):
-                href = urllib.parse.urljoin(url, href)
-
-            # Validate URL
-            if is_valid_url(href, base_domain, same_domain_only):
-                links.append(href)
-
-        return list(set(links))  # Remove duplicates
-    except Exception as e:
-        st.warning(f"Error extracting links from {url}: {e}")
-        return []
+        response = requests.head(url, timeout=5)
+        return response.status_code < 400
+    except:
+        return False
 
 
+def extract_links(url, soup, base_domain):
+    """Extract valid links from the page that stay within the same domain."""
+    links = []
+    for a_tag in soup.find_all("a", href=True):
+        link = a_tag["href"]
+        # Convert relative URLs to absolute
+        full_url = urljoin(url, link)
+        # Parse the URL to get the domain
+        parsed_url = urlparse(full_url)
+        # Only include links from the same domain
+        if parsed_url.netloc == base_domain and parsed_url.scheme in ["http", "https"]:
+            links.append(full_url)
+    return links
+
+
+def should_exclude_url(url, exclude_patterns):
+    """Check if URL should be excluded based on patterns."""
+    for pattern in exclude_patterns:
+        if pattern.strip() and pattern.strip() in url:
+            return True
+    return False
+
+
+def crawl_website(start_url, config, progress_bar=None, progress_text=None):
+    """
+    Crawl website starting from the given URL, respecting depth and page limits.
+
+    Args:
+        start_url (str): Starting URL for the crawl
+        config (dict): Configuration parameters
+        progress_bar: Streamlit progress bar
+        progress_text: Streamlit text element for updates
+
+    Returns:
+        str: Combined text from all crawled pages
+    """
+    max_pages = config["max_pages"]
+    max_depth = config["crawl_depth"]
+    exclude_patterns = config["exclude_patterns"]
+
+    # Parse base domain from start URL
+    base_domain = urlparse(start_url).netloc
+
+    # Initialize tracking variables
+    queue = [(start_url, 0)]  # (url, depth)
+    visited = set()
+    all_text = ""
+    page_count = 0
+
+    while queue and page_count < max_pages:
+        # Get URL and its depth from queue
+        url, depth = queue.pop(0)
+
+        # Skip if already visited or should be excluded
+        if url in visited or should_exclude_url(url, exclude_patterns):
+            continue
+
+        # Mark as visited
+        visited.add(url)
+
+        # Update progress
+        if progress_text:
+            progress_text.text(f"Crawling page {page_count+1}/{max_pages}: {url}")
+
+        try:
+            # Load and extract text from the page
+            text = extract_text_from_webpage(url)
+            if text:
+                all_text += f"\n\n--- Content from: {url} ---\n\n" + text
+                page_count += 1
+
+                # Update progress bar
+                if progress_bar:
+                    progress_bar.progress(min(page_count / max_pages, 1.0))
+
+                # If we haven't reached max depth, extract more links
+                if depth < max_depth:
+                    response = requests.get(url, timeout=10)
+                    soup = BeautifulSoup(response.text, "html.parser")
+                    links = extract_links(url, soup, base_domain)
+
+                    # Add new links to the queue
+                    for link in links:
+                        if link not in visited:
+                            queue.append((link, depth + 1))
+        except Exception as e:
+            st.warning(f"Error crawling {url}: {e}")
+
+        # Short delay to be nice to servers
+        time.sleep(0.5)
+
+    # Store the crawled URLs in session state
+    st.session_state.crawled_urls = visited
+
+    return all_text
+
+
+# ============= Web Processing Component =============
 def extract_text_from_webpage(url):
     """
     Extract and clean text from a webpage.
@@ -168,81 +198,12 @@ def extract_text_from_webpage(url):
     try:
         loader = WebBaseLoader(url)
         data = loader.load()
-        return data[0].page_content, url
+        return data[0].page_content
     except Exception as e:
-        st.warning(f"Error loading webpage {url}: {e}")
-        return None, url
+        st.warning(f"Error loading {url}: {e}")
+        return None
 
 
-def crawl_website(start_url, config, progress_bar=None, status_text=None):
-    """
-    Crawl a website starting from a given URL up to a specified depth.
-
-    Args:
-        start_url (str): The starting URL for crawling.
-        config (dict): Configuration parameters including crawl depth.
-        progress_bar: Streamlit progress bar object.
-        status_text: Streamlit text object for status updates.
-
-    Returns:
-        str: Combined text from all crawled pages.
-    """
-    base_domain = get_domain(start_url)
-    to_crawl = [(start_url, 0)]  # (url, depth)
-    crawled_urls = set()
-    all_texts = []
-
-    max_depth = config["crawl_depth"]
-    max_pages = config["max_pages"]
-    same_domain_only = config["same_domain_only"]
-
-    if progress_bar:
-        progress_bar.progress(0)
-
-    while to_crawl and len(crawled_urls) < max_pages:
-        current_url, depth = to_crawl.pop(0)
-
-        # Skip if already crawled
-        if current_url in crawled_urls:
-            continue
-
-        # Update status
-        if status_text:
-            status_text.text(
-                f"Crawling page {len(crawled_urls) + 1}/{max_pages}: {current_url}"
-            )
-
-        # Extract text from current page
-        result = extract_text_from_webpage(current_url)
-        if result:
-            text, url = result
-            if text:
-                all_texts.append(f"--- Content from {url} ---\n{text}")
-                crawled_urls.add(current_url)
-                st.session_state.crawled_urls.add(current_url)
-
-        # If we haven't reached max depth, get links for next level
-        if depth < max_depth:
-            links = extract_links_from_page(current_url, base_domain, same_domain_only)
-            # Add new links to crawl queue
-            for link in links:
-                if link not in crawled_urls and (link, depth + 1) not in to_crawl:
-                    to_crawl.append((link, depth + 1))
-
-        # Update progress
-        if progress_bar:
-            progress_percentage = min(len(crawled_urls) / max_pages, 1.0)
-            progress_bar.progress(progress_percentage)
-
-    # Final update
-    if status_text:
-        status_text.text(f"Crawling completed. Processed {len(crawled_urls)} pages.")
-
-    # Return combined text from all pages
-    return "\n\n".join(all_texts)
-
-
-# ============= Text Processing Component =============
 def create_full_context_processor(llm, text):
     """
     Create a processor for the full context approach.
@@ -265,7 +226,6 @@ def create_full_context_processor(llm, text):
         User question: {user_input}
 
         Please provide a helpful, accurate, and concise answer based on the website content.
-        If the answer is not in the content, say so clearly.
         """
         response = llm.invoke(prompt)
         return response.content
@@ -331,23 +291,35 @@ def setup_vector_approach(text, config):
     return qa_chain
 
 
-def process_website_content(text, config):
+def process_website(url, config):
     """
-    Process website content by setting up a query processor.
+    Process a website by crawling its pages and setting up a query processor.
 
     Args:
-        text (str): The combined text from all crawled pages.
+        url (str): The starting URL of the website to process.
         config (dict): Configuration parameters.
 
     Returns:
         tuple: A tuple containing:
             - function: The query processor function.
             - int: The length of the extracted text.
+            - int: The number of pages crawled.
     """
-    text_length = len(text)
-    st.info(
-        f"Processed {text_length} characters from {len(st.session_state.crawled_urls)} pages"
-    )
+    # Set up progress tracking
+    progress_text = st.empty()
+    progress_bar = st.progress(0)
+
+    progress_text.text("Starting website crawl...")
+
+    # Crawl the website and get the combined text
+    with st.spinner("Crawling website..."):
+        all_text = crawl_website(url, config, progress_bar, progress_text)
+
+    text_length = len(all_text)
+    num_pages = len(st.session_state.crawled_urls)
+
+    progress_text.text(f"Extracted {text_length} characters from {num_pages} pages")
+    st.success(f"Website crawl complete! Processed {num_pages} pages")
 
     # Initialize the LLM
     llm = ChatOllama(model=config["ollama_model"])
@@ -355,18 +327,22 @@ def process_website_content(text, config):
     # If text is smaller than threshold, use full context approach
     if text_length < config["text_threshold"]:
         st.success("Using full context approach (text is relatively small)")
-        processor = create_full_context_processor(llm, text)
-        st.session_state.full_text = text
+        processor = create_full_context_processor(llm, all_text)
+        st.session_state.full_text = all_text
         st.session_state.vector_approach = False
     else:
         # Otherwise, use vector embeddings approach
         st.success("Using vector embeddings approach (text is relatively large)")
-        qa_chain = setup_vector_approach(text, config)
-        processor = create_vector_db_processor(qa_chain)
-        st.session_state.full_text = None
-        st.session_state.vector_approach = True
+        with st.spinner("Creating vector database..."):
+            qa_chain = setup_vector_approach(all_text, config)
+            processor = create_vector_db_processor(qa_chain)
+            st.session_state.full_text = None
+            st.session_state.vector_approach = True
 
-    return processor, text_length
+    progress_bar.empty()
+    progress_text.empty()
+
+    return processor, text_length, num_pages
 
 
 # ============= Chat UI Component =============
@@ -418,69 +394,50 @@ def main():
     # Get configuration from sidebar
     config = create_sidebar_config()
 
-    # Main app interface
-    url_input = st.text_input(
-        "Enter a website URL to crawl:",
-        "https://python.langchain.com/docs/get_started/introduction",
-    )
-
-    col1, col2 = st.columns([1, 1])
-
-    with col1:
-        crawl_button = st.button("Crawl Website")
-
-    with col2:
-        if st.session_state.crawled_urls:
-            st.info(f"Crawled {len(st.session_state.crawled_urls)} pages")
-
-    # Display crawled URLs in sidebar
-    with st.sidebar:
-        if st.session_state.crawled_urls:
-            with st.expander("Crawled URLs"):
-                for url in st.session_state.crawled_urls:
-                    st.write(f"- {url}")
-
-    if crawl_button and url_input and not st.session_state.crawl_in_progress:
-        # Reset session state for new crawl
-        st.session_state.crawled_urls = set()
-        st.session_state.crawl_in_progress = True
+    # Add button to clear chat history
+    if st.sidebar.button("Clear Chat History"):
+        st.session_state.messages = []
         st.session_state.chat_history = []
+        st.rerun()
 
-        # Create progress indicators
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+    # Main app interface
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        url_input = st.text_input(
+            "Enter a website URL:",
+            "https://python.langchain.com/docs/get_started/introduction",
+        )
+    with col2:
+        process_button = st.button("Process Website", use_container_width=True)
 
-        try:
-            # Crawl the website
-            with st.spinner("Crawling website..."):
-                combined_text = crawl_website(
-                    url_input, config, progress_bar, status_text
-                )
+    if process_button:
+        if url_input:
+            # Store the URL in session state
+            st.session_state.url = url_input
 
-            if combined_text:
-                # Process the crawled content
-                query_processor, text_length = process_website_content(
-                    combined_text, config
-                )
+            # Process the website
+            query_processor, text_length, num_pages = process_website(url_input, config)
 
-                if query_processor is not None:
-                    st.session_state.query_processor = query_processor
-                    st.session_state.text_length = text_length
-                    st.session_state.messages = [
-                        {
-                            "role": "assistant",
-                            "content": f"Website crawled successfully! Processed {len(st.session_state.crawled_urls)} pages. You can now ask questions about the content.",
-                        }
-                    ]
-            else:
-                st.error("No content was extracted from the website.")
-        except Exception as e:
-            st.error(f"Error during crawling: {e}")
-        finally:
-            st.session_state.crawl_in_progress = False
-            # Clean up progress indicators
-            progress_bar.empty()
-            status_text.empty()
+            if query_processor is not None:
+                st.session_state.query_processor = query_processor
+                st.session_state.text_length = text_length
+                st.session_state.num_pages = num_pages
+                st.session_state.chat_history = []
+                st.session_state.messages = [
+                    {
+                        "role": "assistant",
+                        "content": f"Website processed! Crawled {num_pages} pages with total {text_length} characters. You can now ask questions about it.",
+                    }
+                ]
+                st.rerun()
+        else:
+            st.warning("Please enter a valid URL")
+
+    # If crawled URLs are available, show them in an expander
+    if hasattr(st.session_state, "crawled_urls") and st.session_state.crawled_urls:
+        with st.expander("Crawled Pages"):
+            for url in st.session_state.crawled_urls:
+                st.write(f"- {url}")
 
     # Display chat messages
     display_chat_messages()
