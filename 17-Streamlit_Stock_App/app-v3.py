@@ -10,7 +10,6 @@ from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.svm import SVR
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-import xgboost as xgb  # Added XGBoost import
 
 # Page layout
 st.set_page_config(layout="wide", page_title="Stock Market Prediction")
@@ -45,23 +44,6 @@ def create_features(data):
     data["day"] = data.index.dayofweek
     data["month"] = data.index.month
     data["year"] = data.index.year
-
-    # Additional features for advanced models
-    # Relative Strength Index (RSI)
-    delta = data["Close"].diff()
-    gain = delta.where(delta > 0, 0)
-    loss = -delta.where(delta < 0, 0)
-    avg_gain = gain.rolling(window=14).mean()
-    avg_loss = loss.rolling(window=14).mean()
-    rs = avg_gain / avg_loss
-    data["RSI"] = 100 - (100 / (1 + rs))
-
-    # Moving Average Convergence Divergence (MACD)
-    ema12 = data["Close"].ewm(span=12, adjust=False).mean()
-    ema26 = data["Close"].ewm(span=26, adjust=False).mean()
-    data["MACD"] = ema12 - ema26
-    data["MACD_Signal"] = data["MACD"].ewm(span=9, adjust=False).mean()
-
     return data.dropna()
 
 
@@ -81,9 +63,6 @@ def prepare_ml_data(data, target_col="Close", forecast_days=5):
         "day",
         "month",
         "year",
-        "RSI",
-        "MACD",
-        "MACD_Signal",
     ]
     X = data[feature_cols]
     y = data["Target"]
@@ -105,16 +84,6 @@ def train_model(X_train, y_train, model_type):
         model = LinearRegression()
     elif model_type == "Random Forest":
         model = RandomForestRegressor(n_estimators=100, random_state=42)
-    elif model_type == "XGBoost":  # Added XGBoost model
-        model = xgb.XGBRegressor(
-            objective="reg:squarederror",
-            n_estimators=100,
-            max_depth=5,
-            learning_rate=0.1,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            random_state=42,
-        )
     else:  # SVR
         model = SVR(kernel="rbf")
 
@@ -164,33 +133,6 @@ def predict_future(model, last_data, scaler, feature_cols, days=30):
             new_return = (prediction - current_prediction) / current_prediction
             input_features[0, feature_cols.index("Return")] = new_return
 
-            # Simple estimates for RSI and MACD updates (simplified approximation)
-            # These are approximations as properly updating these would require more historical data
-            if "RSI" in feature_cols:
-                if prediction > current_prediction:
-                    input_features[0, feature_cols.index("RSI")] = min(
-                        70, input_features[0, feature_cols.index("RSI")] + 2
-                    )
-                else:
-                    input_features[0, feature_cols.index("RSI")] = max(
-                        30, input_features[0, feature_cols.index("RSI")] - 2
-                    )
-
-            if "MACD" in feature_cols and "MACD_Signal" in feature_cols:
-                # Simple update based on trend
-                macd_idx = feature_cols.index("MACD")
-                macd_signal_idx = feature_cols.index("MACD_Signal")
-                if prediction > current_prediction:
-                    input_features[0, macd_idx] = input_features[0, macd_idx] * 1.01
-                    input_features[0, macd_signal_idx] = (
-                        input_features[0, macd_signal_idx] * 1.005
-                    )
-                else:
-                    input_features[0, macd_idx] = input_features[0, macd_idx] * 0.99
-                    input_features[0, macd_signal_idx] = (
-                        input_features[0, macd_signal_idx] * 0.995
-                    )
-
             # Save current values for next iteration
             last_features = input_features.copy()
             current_prediction = prediction
@@ -198,31 +140,6 @@ def predict_future(model, last_data, scaler, feature_cols, days=30):
     return pd.DataFrame(
         {"Predicted_Close": predictions}, index=future_dates[: len(predictions)]
     )
-
-
-# Additional function for model comparison
-def compare_models(hist_data, feature_cols, forecast_days=5):
-    results = {}
-    models = ["Linear Regression", "Random Forest", "SVR", "XGBoost"]
-
-    for model_type in models:
-        feature_data = create_features(hist_data)
-        X_train, X_test, y_train, y_test, scaler, _ = prepare_ml_data(
-            feature_data, forecast_days=forecast_days
-        )
-
-        model = train_model(X_train, y_train, model_type)
-        y_pred = model.predict(X_test)
-
-        # Calculate metrics
-        mse = mean_squared_error(y_test, y_pred)
-        rmse = np.sqrt(mse)
-        mae = mean_absolute_error(y_test, y_pred)
-        r2 = r2_score(y_test, y_pred)
-
-        results[model_type] = {"MAE": mae, "RMSE": rmse, "MSE": mse, "R2": r2}
-
-    return pd.DataFrame(results).T
 
 
 # Sidebar controls
@@ -235,15 +152,10 @@ period = st.sidebar.selectbox(
 # ML controls
 st.sidebar.header("ML Prediction Settings")
 model_type = st.sidebar.selectbox(
-    "Select Model",
-    options=["Linear Regression", "Random Forest", "SVR", "XGBoost"],
-    index=3,  # Added XGBoost
+    "Select Model", options=["Linear Regression", "Random Forest", "SVR"], index=0
 )
 forecast_days = st.sidebar.slider("Training Forecast Horizon (Days)", 1, 30, 5)
 future_days = st.sidebar.slider("Future Prediction Days", 5, 60, 30)
-
-# Option for model comparison
-compare_models_option = st.sidebar.checkbox("Compare All Models", value=False)
 
 if ticker:
     try:
@@ -279,39 +191,6 @@ if ticker:
 
         # ML Section
         st.header("Machine Learning Price Prediction")
-
-        # Model comparison section
-        if compare_models_option:
-            with st.spinner("Comparing all models... This may take a minute."):
-                comparison_df = compare_models(hist_data, forecast_days=forecast_days)
-
-                st.subheader("Model Performance Comparison")
-                st.dataframe(
-                    comparison_df.style.format(
-                        {
-                            "MAE": "${:.2f}",
-                            "RMSE": "${:.2f}",
-                            "MSE": "${:.2f}",
-                            "R2": "{:.4f}",
-                        }
-                    )
-                )
-
-                # Bar chart comparison
-                metrics = ["RMSE", "MAE", "R2"]
-                for metric in metrics:
-                    fig = go.Figure(
-                        data=[
-                            go.Bar(
-                                x=comparison_df.index,
-                                y=comparison_df[metric],
-                                text=comparison_df[metric].round(4),
-                                textposition="auto",
-                            )
-                        ]
-                    )
-                    fig.update_layout(title=f"Model Comparison - {metric}")
-                    st.plotly_chart(fig, use_container_width=True)
 
         with st.spinner("Training model and generating predictions..."):
             # Prepare data
@@ -379,17 +258,11 @@ if ticker:
         st.subheader("Prediction Values")
         st.dataframe(future_pred.style.format({"Predicted_Close": "${:.2f}"}))
 
-        # Show feature importance for tree-based models
-        if model_type in ["Random Forest", "XGBoost"]:
+        # Show feature importance for Random Forest
+        if model_type == "Random Forest":
             st.subheader("Feature Importance")
-
-            if model_type == "Random Forest":
-                importance = model.feature_importances_
-            else:  # XGBoost
-                importance = model.feature_importances_
-
             importance_df = pd.DataFrame(
-                {"Feature": feature_cols, "Importance": importance}
+                {"Feature": feature_cols, "Importance": model.feature_importances_}
             ).sort_values("Importance", ascending=False)
 
             fig = go.Figure(
@@ -414,12 +287,6 @@ st.write(
     """
 This application provides stock market analysis and machine learning-based price predictions.
 The predictions are based on historical patterns and technical indicators.
-
-The app uses four different algorithms:
-- Linear Regression: A simple but effective linear approach
-- Random Forest: An ensemble of decision trees for robust predictions
-- Support Vector Regression (SVR): A kernel-based method for nonlinear relationships
-- XGBoost: An advanced gradient boosting algorithm that often outperforms traditional methods
 """
 )
 st.warning(
