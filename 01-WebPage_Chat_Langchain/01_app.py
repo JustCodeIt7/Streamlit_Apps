@@ -1,3 +1,4 @@
+from numpy import imag
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
@@ -6,22 +7,23 @@ from langchain_community.document_loaders import WebBaseLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_ollama import OllamaEmbeddings, ChatOllama
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings # if you wannt to use openai
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
 from langchain.prompts import PromptTemplate
 
 # ============= Configuration Component =============
+def setup_page_config():
+    """Configure the Streamlit page."""
+    st.set_page_config(page_title="Webpage Chat", page_icon="🕸️", layout="wide")
+    st.title("Webpage Chat with LangChain & Ollama")
+
 def initialize_session_state():
     """Initialize session state variables if they don't exist."""
     if "messages" not in st.session_state:
         st.session_state.messages = []
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
-
-def setup_page_config():
-    """Configure the Streamlit page."""
-    st.set_page_config(page_title="Chat with Webpages", page_icon="🌐", layout="wide")
-    st.title("Chat with Webpages using LangChain and Ollama")
 
 def create_sidebar_config():
     """Create and return the configuration from the sidebar."""
@@ -153,7 +155,7 @@ def setup_vector_approach(text, config):
 
     # Create a retriever
     retriever = vectorstore.as_retriever(
-        search_kwargs={"k": 4}
+        search_kwargs={"k": 5}
     )
 
     # Set up memory
@@ -187,6 +189,7 @@ def process_webpage(url, config):
     """
     with st.spinner("Processing webpage..."):
         text = extract_text_from_webpage(url)
+
         if text is None:
             return None, 0
 
@@ -218,6 +221,7 @@ def display_chat_messages():
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.write(message["content"])
+
 
 def handle_user_input(query_processor):
     """
@@ -257,7 +261,8 @@ def main():
     # Get configuration from sidebar
     config = create_sidebar_config()
 
-    # Main app interface
+
+        # Main app interface
     url_input = st.text_input("Enter a webpage URL:", "https://python.langchain.com/docs/get_started/introduction")
 
     if st.button("Process Webpage"):
@@ -275,6 +280,7 @@ def main():
                 st.session_state.messages = [{"role": "assistant", "content": "Webpage processed! You can now ask questions about it."}]
         else:
             st.warning("Please enter a valid URL")
+
 
     # Display chat messages
     display_chat_messages()
