@@ -5,6 +5,7 @@ from PIL import Image
 import matplotlib.pyplot as plt
 import pandas as pd
 from torch.nn import functional as F
+import numpy as np
 
 
 # Caching the model loading so it doesn't reload on every run
@@ -104,34 +105,143 @@ with col2:
             # Create the bar chart
             st.bar_chart(df)
 
-# Add feature map visualization below
+
+def generate_gradcam(img_tensor, model, target_class=None):
+    """Generate Grad-CAM visualization for the predicted class"""
+    # Store activations and gradients
+    activations = {}
+    gradients = {}
+
+    # Function to get activations during forward pass
+    def save_activation(name):
+        def hook(module, input, output):
+            activations[name] = output
+
+        return hook
+
+    # Function to get gradients during backward pass
+    def save_gradient(name):
+        def hook(grad):
+            gradients[name] = grad
+
+        return hook
+
+    # Register hooks
+    handle_forward = model.layer4.register_forward_hook(save_activation("layer4"))
+
+    # Forward pass
+    outputs = model(img_tensor)
+
+    # If no target class is specified, use the predicted class
+    if target_class is None:
+        target_class = outputs.argmax(dim=1).item()
+
+    # One-hot encode the target class
+    target = torch.zeros_like(outputs)
+    target[0, target_class] = 1
+
+    # Clear existing gradients
+    model.zero_grad()
+
+    # Get activations
+    layer4_activation = activations["layer4"]
+
+    # Register hook for gradients
+    layer4_activation.register_hook(save_gradient("layer4"))
+
+    # Backward pass
+    outputs.backward(target, retain_graph=True)
+
+    # Get gradients
+    gradients = gradients["layer4"][0]
+
+    # Global average pooling of gradients
+    weights = torch.mean(gradients, dim=(1, 2), keepdim=True)
+
+    # Weighted combination of activation maps
+    cam = torch.sum(weights * layer4_activation[0], dim=0)
+
+    # Apply ReLU
+    cam = torch.maximum(cam, torch.tensor(0.0))
+
+    # Normalize
+    cam = cam - cam.min()
+    cam = cam / (cam.max() + 1e-8)
+
+    # Resize CAM to match the input image size
+    cam = cam.detach().cpu().numpy()
+
+    # Clean up
+    handle_forward.remove()
+
+    return cam  # Add this code after the "Show Feature Maps" checkbox section
+
+
 if uploaded_file is not None and model_loaded:
-    if st.checkbox("Show Feature Maps"):
-        st.header("Feature Maps Visualization")
+    if st.checkbox("Show Activation Heatmap (Grad-CAM)"):
+        st.header("Grad-CAM Visualization")
 
-        with st.spinner("Generating feature maps..."):
-            # Get activation maps
+        with st.spinner("Generating heatmap..."):
+            # Preprocess the image
             img_tensor = preprocess(image).unsqueeze(0)
-            activations = get_activation_maps(img_tensor, model)
 
-            # Get the activation maps
-            feature_maps = activations["layer4"].squeeze(0).cpu().numpy()
+            # Get predictions first to determine the predicted class
+            with torch.no_grad():
+                outputs = model(img_tensor)
 
-            # Display a sample of feature maps (first 16)
-            num_maps = min(16, feature_maps.shape[0])
+            pred_class = outputs.argmax(dim=1).item()
+            pred_class_name = categories[pred_class]
 
-            fig, axes = plt.subplots(4, 4, figsize=(12, 12))
-            for i, ax in enumerate(axes.flat):
-                if i < num_maps:
-                    ax.imshow(feature_maps[i], cmap="viridis")
-                    ax.set_title(f"Map {i+1}")
-                    ax.axis("off")
-                else:
-                    ax.axis("off")
+            # Generate Grad-CAM for the predicted class
+            cam = generate_gradcam(img_tensor, model, pred_class)
+
+            # Create a figure with two subplots
+            fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 5))
+
+            # Original image
+            img_np = np.array(image.resize((224, 224)))
+            ax1.imshow(img_np)
+            ax1.set_title("Original Image")
+            ax1.axis("off")
+
+            # Heatmap
+            ax2.imshow(cam, cmap="jet")
+            ax2.set_title("Activation Heatmap")
+            ax2.axis("off")
+
+            # Overlay heatmap on original image
+            import cv2
+
+            cam_resized = cv2.resize(cam, (224, 224))
+            heatmap = np.uint8(255 * cam_resized)
+            heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
+
+            # Convert RGB to BGR for OpenCV
+            img_np = (
+                img_np[:, :, ::-1].copy()
+                if img_np.shape[-1] == 3
+                else cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR)
+            )
+
+            # Superimpose the heatmap on original image
+            superimposed_img = cv2.addWeighted(img_np, 0.6, heatmap, 0.4, 0)
+            superimposed_img = superimposed_img[:, :, ::-1]  # Convert back to RGB
+
+            ax3.imshow(superimposed_img)
+            ax3.set_title(f"Attention for: {pred_class_name}")
+            ax3.axis("off")
 
             st.pyplot(fig)
 
-# App information
+            st.markdown(
+                f"""
+            **Grad-CAM Visualization Explanation:**
+
+            This visualization shows where the model is focusing to make its prediction. 
+            Bright areas in the heatmap (red/yellow) are regions that strongly influence 
+            the classification decision for "{pred_class_name}".
+            """
+            )  # App information
 with st.expander("About this app"):
     st.markdown(
         """
