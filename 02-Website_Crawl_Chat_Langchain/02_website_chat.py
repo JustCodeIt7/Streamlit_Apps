@@ -37,12 +37,12 @@ def create_sidebar_config():
         config = {
             "ollama_model": st.selectbox(
                 "Select Ollama Model",
-                ["deepseek-r1:1.5b", "qwen2.5:0.5b", "llama3.2:1b", "deepseek-r1:8b"],
+                ["deepseek-r1:1.5b", "qwen2.5:0.5b", "llama3.2:1b"],
                 index=0,
             ),
             "embedding_model": st.selectbox(
                 "Select Embedding Model",
-                ["nomic-embed-text", "snowflake-arctic-embed:latest"],
+                ["all-minilm:33m", "snowflake-arctic-embed:latest"],
                 index=0,
             ),
             "text_threshold": st.slider(
