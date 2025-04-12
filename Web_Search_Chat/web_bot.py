@@ -7,6 +7,20 @@ from langchain.memory import ConversationBufferMemory
 from langchain import hub
 from langchain.agents import AgentExecutor, create_react_agent
 from langchain_core.messages import AIMessage, HumanMessage
+import re  # Import regex for fallback URL extraction
+import warnings  # Import the warnings module
+
+# --- Suppress the specific UserWarning from Langchain ---
+# This is a workaround because setting output_key might not work reliably in older versions
+# The recommended fix is to upgrade the langchain library (`pip install --upgrade langchain`)
+warnings.filterwarnings(
+    "ignore",
+    message=".*'ConversationBufferMemory' got multiple output keys.*",  # Match the warning message pattern
+    category=UserWarning,
+    module="langchain.memory.chat_memory",  # Be specific about the source
+)
+# --- End Warning Suppression ---
+
 
 # --- Configuration ---
 OLLAMA_BASE_URL = "http://localhost:11434"  # Default Ollama URL
@@ -16,17 +30,28 @@ AGENT_PROMPT_REPO = "hwchase17/react-chat"  # A reliable ReAct chat prompt
 # --- Initialization ---
 
 # 1. Initialize LLM
-# Check if Ollama server is available and the model exists
-try:
-    llm = ChatOllama(model=OLLAMA_MODEL, base_url=OLLAMA_BASE_URL, temperature=0.7)
-    # Simple test call
-    llm.invoke("Hello!")
-except Exception as e:
-    st.error(f"Error connecting to Ollama or model '{OLLAMA_MODEL}': {e}")
-    st.error(
-        f"Please ensure the Ollama server is running at {OLLAMA_BASE_URL} and the model '{OLLAMA_MODEL}' is pulled."
-    )
-    st.stop()  # Stop execution if LLM isn't available
+# Use a flag in session state to avoid re-checking LLM status unnecessarily on every rerun
+if "llm_initialized" not in st.session_state:
+    st.session_state.llm_initialized = False
+if not st.session_state.llm_initialized:
+    try:
+        llm = ChatOllama(model=OLLAMA_MODEL, base_url=OLLAMA_BASE_URL, temperature=0.7)
+        # Simple test call
+        llm.invoke("Hello!")
+        st.session_state.llm = llm  # Store llm in session state if successful
+        st.session_state.llm_initialized = True
+    except Exception as e:
+        st.error(f"Error connecting to Ollama or model '{OLLAMA_MODEL}': {e}")
+        st.error(
+            f"Please ensure the Ollama server is running at {OLLAMA_BASE_URL} and the model '{OLLAMA_MODEL}' is pulled."
+        )
+        st.stop()  # Stop execution if LLM isn't available on first run
+# On subsequent reruns, retrieve the llm from session state
+llm = st.session_state.get("llm", None)
+if not llm:  # Should not happen if initialization logic is correct, but as a safeguard
+    st.error("LLM not found in session state. Please refresh.")
+    st.stop()
+
 
 # 2. Initialize Tools
 # Using DuckDuckGoSearchResults to get URLs
@@ -35,6 +60,8 @@ tools = [search_tool]
 
 # 3. Initialize Memory
 # Use Streamlit session state for robust memory handling across reruns
+# NOTE: We are NOT adding output_key='output' here because it didn't work in the user's old version.
+# The warning is being suppressed by warnings.filterwarnings above.
 if "memory" not in st.session_state:
     st.session_state.memory = ConversationBufferMemory(
         memory_key="chat_history", return_messages=True  # Return actual message objects
@@ -50,15 +77,19 @@ prompt = hub.pull(AGENT_PROMPT_REPO)
 # Create the ReAct agent
 agent = create_react_agent(llm, tools, prompt)
 
-# Create the Agent Executor
-agent_executor = AgentExecutor(
-    agent=agent,
-    tools=tools,
-    memory=st.session_state.memory,
-    verbose=True,  # Set to True to see agent's thought process in console
-    handle_parsing_errors=True,  # Gracefully handle potential LLM output parsing errors
-    return_intermediate_steps=True,  # Crucial for accessing tool usage and outputs
-)
+# Create the Agent Executor only if it doesn't exist in session state
+if "agent_executor" not in st.session_state:
+    st.session_state.agent_executor = AgentExecutor(
+        agent=agent,
+        tools=tools,
+        memory=st.session_state.memory,
+        verbose=True,  # Set to True to see agent's thought process in console
+        handle_parsing_errors=True,  # Gracefully handle potential LLM output parsing errors
+        return_intermediate_steps=True,  # Crucial for accessing tool usage and outputs
+    )
+# Retrieve agent executor from session state
+agent_executor = st.session_state.agent_executor
+
 
 # --- Streamlit UI ---
 
@@ -73,15 +104,16 @@ for message_info in st.session_state.messages:
         # Display sources if they exist for an assistant message
         if "sources" in message_info and message_info["sources"]:
             st.caption("Sources:")
+            # Ensure sources are displayed correctly even after rerun
+            processed_sources = []
             for source in message_info["sources"]:
-                # Use a more robust way to display potential source links
                 if isinstance(source, dict) and "link" in source:
-                    st.caption(
+                    processed_sources.append(
                         f"- [{source.get('title', 'Source Link')}]({source['link']})"
                     )
                 elif isinstance(source, str) and source.startswith("http"):
-                    st.caption(f"- {source}")
-                # Add more checks if needed based on actual tool output format
+                    processed_sources.append(f"- {source}")
+            st.markdown("\n".join(processed_sources), unsafe_allow_html=True)
 
 
 # Accept user input
@@ -108,57 +140,64 @@ if prompt := st.chat_input("What can I help you with?"):
 
                 # Extract source information from intermediate steps
                 source_links = set()  # Use a set to avoid duplicate links
+                source_details = []  # Store dicts with link and title if available
                 if "intermediate_steps" in response:
                     for step in response["intermediate_steps"]:
                         action, observation = step
-                        # Check if the action used the search tool
-                        if action.tool == search_tool.name:
-                            # Observation from DuckDuckGoSearchResults should be a list of dicts
+                        # Check if the action used the search tool (more robust check)
+                        if hasattr(action, "tool") and action.tool == search_tool.name:
+                            # Observation from DuckDuckGoSearchResults should be a list of dicts or string
                             if isinstance(observation, list):
                                 for result in observation:
                                     if isinstance(result, dict) and "link" in result:
-                                        source_links.add(result["link"])
+                                        link = result["link"]
+                                        if link not in source_links:
+                                            source_links.add(link)
+                                            source_details.append(
+                                                {
+                                                    "link": link,
+                                                    "title": result.get(
+                                                        "title", "Source Link"
+                                                    ),  # Get title if available
+                                                }
+                                            )
                             elif isinstance(observation, str):
-                                # Sometimes it might return a string summary; less ideal for links
                                 # Basic check for URLs in the string observation as a fallback
-                                import re
-
                                 found_urls = re.findall(
                                     r"http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+",
                                     observation,
                                 )
                                 for url in found_urls:
-                                    source_links.add(url)
+                                    if url not in source_links:
+                                        source_links.add(url)
+                                        source_details.append(
+                                            {"link": url, "title": "Source Link"}
+                                        )
 
                 # Display the agent's final response
                 st.markdown(agent_response_content)
 
                 # Display collected sources if any were found
-                if source_links:
+                if source_details:
                     st.caption("Sources:")
-                    for link in sorted(
-                        list(source_links)
+                    source_markdown = []
+                    for detail in sorted(
+                        source_details, key=lambda x: x["link"]
                     ):  # Sort for consistent display
-                        st.caption(f"- {link}")
+                        source_markdown.append(
+                            f"- [{detail['title']}]({detail['link']})"
+                        )
+                    st.markdown("\n".join(source_markdown), unsafe_allow_html=True)
 
                 # Add assistant response (and sources) to session state for display history
                 st.session_state.messages.append(
                     {
                         "role": "assistant",
                         "content": agent_response_content,
-                        # Store sources as a list for potential reuse/display formatting
-                        "sources": [
-                            {"link": link, "title": "Source Link"}
-                            for link in source_links
-                        ],
+                        # Store detailed sources for better display later
+                        "sources": source_details,
                     }
                 )
-
-                # Note: The ConversationBufferMemory (`st.session_state.memory`)
-                # is automatically updated by the AgentExecutor. We don't need
-                # to manually add messages there *if* we use the memory object
-                # directly within the executor. We are manually managing
-                # st.session_state.messages purely for the UI display.
 
             except Exception as e:
                 error_message = f"An error occurred: {e}"
@@ -170,5 +209,11 @@ if prompt := st.chat_input("What can I help you with?"):
 # Optional: Add a button to clear history
 if st.sidebar.button("Clear Chat History"):
     st.session_state.messages = []
-    st.session_state.memory.clear()  # Clear Langchain memory too
+    # Re-initialize memory if clearing
+    st.session_state.memory = ConversationBufferMemory(
+        memory_key="chat_history", return_messages=True
+    )
+    # Optionally clear agent executor if its state depends heavily on memory nuances not captured by clearing memory alone
+    if "agent_executor" in st.session_state:
+        del st.session_state["agent_executor"]
     st.rerun()  # Rerun the app to reflect the cleared state
