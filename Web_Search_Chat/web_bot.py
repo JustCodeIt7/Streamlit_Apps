@@ -49,7 +49,7 @@ st.sidebar.slider(
     max_value=10, # You can adjust this maximum limit
     key="max_search_results", # Links the slider directly to the session state variable
     step=1,
-    help="Select the maximum number of search results the agent should retrieve."
+    help="Select the maximum number of search results the agent should retrieve and display." # Updated help text
 )
 # Get the current value from session state (which is updated by the slider)
 current_max_results = st.session_state.max_search_results
@@ -177,7 +177,7 @@ for message_info in st.session_state.messages:
                 if isinstance(source, dict) and "link" in source:
                     title = source.get('title', '') # Get title or empty string if missing
                     link = source['link']
-                    # *** UPDATED LOGIC: Use title if available and meaningful, otherwise use link ***
+                    # Use title if available and meaningful, otherwise use link
                     display_text = title if title and title != "Source Link" else link
                     processed_sources.append(f"- [{display_text}]({link})")
                 # Handle simple string URL sources (fallback)
@@ -214,49 +214,66 @@ if user_query := st.chat_input("What can I help you with?"):
                 # --- Extract source information from intermediate steps ---
                 source_links = set() # Use a set to automatically handle duplicate links
                 source_details = [] # Store details (link, title) for display
+                # *** Get the actual limit set by the user from the slider ***
+                results_limit = st.session_state.max_search_results
+
                 # Check if the agent provided intermediate steps (tool usage)
                 if "intermediate_steps" in response:
                     # Iterate through the (action, observation) pairs
                     for step in response["intermediate_steps"]:
+                        # *** Check if we have already reached the desired number of unique sources ***
+                        if len(source_links) >= results_limit:
+                            break # Stop processing further steps if limit is reached
+
                         action, observation = step
                         # Check if the action taken was using the configured search tool
-                        # Access the tool name from the session state instance for robustness
                         if hasattr(action, "tool") and action.tool == st.session_state.search_tool.name:
                             # Process the observation returned by the search tool
                             if isinstance(observation, list): # Expected format is list of dicts
                                 for result in observation:
+                                    # *** Check limit again before processing each result from the tool ***
+                                    if len(source_links) >= results_limit:
+                                        break # Stop processing results in this observation if limit reached
+
                                     if isinstance(result, dict) and "link" in result:
                                         link = result["link"]
-                                        # Add to set to check for duplicates; add details if new
+                                        # Add to set to check for duplicates; add details ONLY if new AND limit not reached
                                         if link not in source_links:
                                             source_links.add(link)
                                             source_details.append({
                                                 "link": link,
-                                                # Use title if available, otherwise default to "Source Link"
-                                                # This default helps the display logic later.
                                                 "title": result.get("title", "Source Link")
                                             })
+                                # Exit the outer loop if the limit was reached within this inner loop
+                                if len(source_links) >= results_limit:
+                                    break
                             elif isinstance(observation, str): # Fallback if observation is just a string
-                                # Use regex to find potential URLs in the string
                                 found_urls = re.findall(r"http[s]?://\S+", observation)
                                 for url in found_urls:
-                                    if url not in source_links:
-                                        source_links.add(url)
-                                        # Assign default title for consistency
-                                        source_details.append({"link": url, "title": "Source Link"})
+                                     # *** Check limit again before processing each found URL ***
+                                     if len(source_links) >= results_limit:
+                                        break # Stop processing URLs if limit reached
 
+                                     if url not in source_links:
+                                        source_links.add(url)
+                                        source_details.append({"link": url, "title": "Source Link"})
+                                # Exit the outer loop if the limit was reached within this inner loop
+                                if len(source_links) >= results_limit:
+                                    break
+
+                # --- Display the final response and sources ---
                 # Display the agent's final text response
                 st.markdown(agent_response_content)
 
-                # Display the collected source links, if any
+                # Display the collected source links, if any (now strictly respects the limit)
                 if source_details:
                     st.caption("Sources:")
                     source_markdown = []
-                     # Sort sources for consistent display order
+                    # Sort sources for consistent display order
                     for detail in sorted(source_details, key=lambda x: x["link"]):
                         title = detail.get('title', '') # Get title or empty string
                         link = detail['link']
-                        # *** UPDATED LOGIC: Use title if available and meaningful, otherwise use link ***
+                        # Use title if available and meaningful, otherwise use link
                         display_text = title if title and title != "Source Link" else link
                         source_markdown.append(f"- [{display_text}]({link})")
                     st.markdown("\n".join(source_markdown), unsafe_allow_html=True)
@@ -265,7 +282,8 @@ if user_query := st.chat_input("What can I help you with?"):
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": agent_response_content,
-                    "sources": source_details # Store the structured source details
+                    # Store the structured source details (which now respects the limit)
+                    "sources": source_details
                 })
 
             except Exception as e:
